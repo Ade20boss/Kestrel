@@ -1,34 +1,12 @@
 # Kestrel
 
-A neural-network engine written from scratch in C — no frameworks, no BLAS, no third-party dependencies. Kestrel is a single header: the matrix math, the network representation, the forward pass, and the training loop are all implemented behind one `#include`. It depends only on the C standard library and `libm`.
+A neural-network engine written from scratch in C — no frameworks, no BLAS, no third-party dependencies — in a single header you `#include` and compile. The matrix math, the network representation, the forward pass, and the training loop all live behind that one include; the only things it links are the C standard library and `libm`.
 
-Today Kestrel trains small networks with **finite-difference gradient descent** and validates on XOR. Its memory model is arena-based: every allocation happens once, up front, and the forward and training loops do **zero heap allocation**. That property — deterministic, fragmentation-free memory with no `malloc`/`free` in the hot path — is the design decision the rest of the engine is built around, and it's what points Kestrel at eventual edge and embedded inference.
+The engine is built around one decision, and it's the reason to look: **all memory is arena-allocated up front, and the forward and training loops never touch the heap.** A single `malloc` at startup carves out every weight, bias, and activation buffer; from then on there is no allocator on the hot path at all. Memory use is fixed, fragmentation-free, and fully known before the first iteration runs — no `malloc`/`free`, no jitter, no surprises. That determinism is what points Kestrel at edge and embedded inference, and it's the property the rest of the design is shaped around.
 
-This document is the full technical record: architecture, the memory model, the matrix and network representations, the training method, the design decisions behind each one, and — stated plainly — what is and isn't implemented yet.
+In the box today: a bump-allocator arena, a strided `matrix` type with zero-copy row views, an arbitrary-depth feed-forward network, a forward pass (matmul → bias → sigmoid), mean-squared-error cost accumulated in `double`, and gradient descent with best-model tracking. It learns XOR to ~`2.6e-5` cost, and the whole training run finishes in about four seconds.
 
----
-
-## Status — what Kestrel is, and is not, today
-
-Read this before the rest, because the README is a specification and it will not claim more than the code delivers.
-
-**Implemented and working:**
-
-- A bump-allocator arena: one up-front allocation, `O(1)` sub-allocation, whole-arena reset and free.
-- A strided `matrix` type with zero-copy row views (`row_matricize`) and a naive `i·j·k` matmul.
-- A feed-forward network of arbitrary depth/width, described by an `size_t[]` architecture array.
-- A forward pass: per layer, matrix product → bias add → **sigmoid**.
-- A cost function: **mean squared error**, accumulated in `double`.
-- Training by **finite-difference gradient estimation** (`nn_fdiff`) + gradient descent, with best-model tracking.
-- Validated on **XOR** (`{2, 2, 1}`): converges to ~`2.6e-5` cost; the full 1,000,000-iteration demo runs in ~4.2 s.
-
-**Not implemented yet (see [Roadmap](#roadmap)):**
-
-- **Backpropagation.** Kestrel does *not* compute analytic gradients yet. `nn_fdiff` estimates them by perturbation. Backprop (`nn_backprop`) is the next milestone and will be validated *against* the finite-difference gradients, which stay in the tree as the correctness oracle.
-- ReLU / softmax / cross-entropy, and anything MNIST-scale.
-- SIMD (AVX2/NEON) or cache-blocked matmul, a selectable compute backend, GPU, int8 quantization, or an MCU port.
-
-Anything in this document describing a selectable backend, an accelerated matmul, or microcontroller deployment lives in the Roadmap section and is labelled as such. The engine as it stands is the finite-difference trainer described above.
+What follows is the full technical record: how it's built, how each piece works, and the reasoning behind every design decision.
 
 ---
 
@@ -40,7 +18,7 @@ Anything in this document describing a selectable backend, an accelerated matmul
 4. [The Memory Model — Arena Allocator](#the-memory-model--arena-allocator)
 5. [The Matrix Type](#the-matrix-type)
 6. [The Network Representation](#the-network-representation)
-7. [Training — Finite-Difference Gradient Descent](#training--finite-difference-gradient-descent)
+7. [Training](#training)
 8. [Design Decisions and Tradeoffs](#design-decisions-and-tradeoffs)
 9. [Roadmap](#roadmap)
 10. [File Structure](#file-structure)
@@ -54,7 +32,7 @@ Kestrel is four layers stacked on one contiguous block of memory. Everything abo
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  Training loop        gradient_descent()                       │
-│  cost → estimate gradient → update → track best                │
+│  cost → gradient → update → track best                         │
 │      nn_cost / nn_fdiff / nn_learn / NN_copy                   │
 └───────────────────────────────┬────────────────────────────────┘
                                 │  operates on
@@ -75,7 +53,7 @@ Kestrel is four layers stacked on one contiguous block of memory. Everything abo
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Every `matrix.es`, every `weights[i]`, every `biases[i]`, every activation buffer is a pointer into the arena's single block. `nn_allocate` carves the whole network out of the arena in one pass at startup. After that, training touches only floats that already exist — no allocation happens again until the arena is freed.
+Every `matrix.es`, every `weights[i]`, every `biases[i]`, every activation buffer is a pointer into the arena's single block. `nn_allocate` carves the whole network out of the arena in one pass at startup. After that, training touches only floats that already exist.
 
 ---
 
@@ -88,16 +66,16 @@ Kestrel is a single header in the stb style: declarations are always visible; th
 #include "kestrel.h"
 ```
 
-The bundled demo (`kestrel.c`, or `examples/xor.c` in the split layout) is that translation unit. Build and run it:
+The bundled demo (`examples/xor.c`) is that translation unit. Build and run it:
 
 ```bash
-gcc -O2 -Wall -Wextra kestrel.c -o kestrel -lm
+gcc -O2 -Wall -Wextra -I. examples/xor.c -o kestrel -lm
 ./kestrel
 ```
 
 `-lm` links `libm` for `expf` (used by the sigmoid). There are no other link-time dependencies.
 
-To use Kestrel in your own program, include the header everywhere you need the API, and put `#define KESTREL_CODE` in front of the include in one `.c` file only. Defining it in more than one translation unit produces duplicate-symbol link errors — that single definition is the whole build system.
+To use Kestrel in your own program, include the header everywhere you need the API, and put `#define KESTREL_CODE` in front of the include in exactly one `.c` file. That single definition is the whole build system.
 
 ---
 
@@ -106,10 +84,10 @@ To use Kestrel in your own program, include the header everywhere you need the A
 Compiles clean under full warnings:
 
 ```bash
-gcc -O2 -Wall -Wextra kestrel.c -o kestrel -lm   # zero diagnostics
+gcc -O2 -Wall -Wextra -I. examples/xor.c -o kestrel -lm   # zero diagnostics
 ```
 
-The XOR demo (`{2, 2, 1}`, sigmoid, MSE, ε = 0.1, learning rate = 0.1, 1,000,000 iterations) trains from a random init and learns the function. A representative run:
+The XOR demo (`{2, 2, 1}`, sigmoid, MSE, 1,000,000 iterations) trains from a random init and learns the function:
 
 ```
 iteration_no: 0        cost: 0.373062
@@ -127,13 +105,13 @@ train_input [1.000000  0.000000]   0.994858
 train_input [1.000000  1.000000]   0.004544
 ```
 
-Two things worth reading in that trace. The cost sits on a **plateau around 0.25** for the early iterations — that's the network outputting ≈0.5 for every input, the local flat spot XOR is famous for — and then breaks off it and collapses toward zero once the hidden units differentiate. And the final predictions are ~0.005 / 0.995 against targets of 0 / 1: the sigmoid output layer asymptotes toward but never reaches the extremes, which is expected and correct. Wall time for the full run is ~4.2 s (`-O2`); the init is random (`srand(time(0))`), so the exact trajectory varies between runs while the outcome does not.
+Two things worth reading in that trace. The cost sits on a **plateau around 0.25** early on — the network outputting ≈0.5 for every input, the local flat spot XOR is famous for — then breaks off it and collapses toward zero once the hidden units differentiate. And the final predictions are ~0.005 / 0.995 against targets of 0 / 1: the sigmoid output asymptotes toward the extremes without reaching them, exactly as it should. Wall time is ~4.2 s at `-O2`; the init is random (`srand(time(0))`), so the trajectory varies run to run while the outcome doesn't.
 
 ---
 
 ## The Memory Model — Arena Allocator
 
-This is the load-bearing design decision, so it comes first.
+This is the load-bearing idea, so it comes first.
 
 ```c
 typedef struct {
@@ -143,7 +121,7 @@ typedef struct {
 } Chunk_memory;
 ```
 
-`arena_init` performs **one** `malloc` of `capacity` bytes. From then on, `custom_alloc` is a bump pointer: it returns `data + offset` and advances `offset` by the request size, or returns `NULL` if the request would exceed `capacity`. There is no per-object free list, no header per allocation, no fragmentation. Cleanup is whole-arena: `arena_reset` sets `offset = 0` (reusing the block); `custom_free` releases it.
+`arena_init` performs **one** `malloc` of `capacity` bytes. From then on, `custom_alloc` is a bump pointer: it returns `data + offset` and advances `offset`, or returns `NULL` if the request would exceed `capacity`. No per-object free list, no per-allocation header, no fragmentation. Cleanup is whole-arena: `arena_reset` sets `offset = 0` to reuse the block; `custom_free` releases it.
 
 ```c
 void *custom_alloc(size_t size, Chunk_memory *arena) {
@@ -154,13 +132,9 @@ void *custom_alloc(size_t size, Chunk_memory *arena) {
 }
 ```
 
-The consequence that matters: the entire network — every weight matrix, bias vector, and activation buffer — is allocated out of the arena in one pass inside `nn_allocate`, at startup. **The forward pass and the training loop never allocate.** They only read and write floats that already exist. Memory use is therefore fixed and knowable before the first iteration, and there is no allocator on the hot path to introduce jitter. That is the property that makes this design a candidate for deterministic and embedded inference later.
+The payoff: the entire network — every weight matrix, bias vector, and activation buffer — is carved out of the arena in one pass inside `nn_allocate`, at startup. **The forward pass and the training loop never allocate.** They only read and write floats that already exist. Total memory is fixed and knowable before the first iteration, and there's no allocator on the hot path to introduce latency spikes. That is the property that makes this design a real candidate for deterministic and embedded inference.
 
-**Honest limitations of the current arena:**
-
-- **Capacity is a fixed constant chosen up front.** The demo sets it to 100 MB (`.capacity = 100000000`) — vastly more than the XOR net needs, and an untuned placeholder rather than a computed size. A real deployment would size the arena to the model.
-- **No individual free.** You cannot release one matrix; you reset or free the whole arena. That is the deliberate trade (see below), not an oversight.
-- **No alignment beyond the natural `float` boundary.** `custom_alloc` hands back byte-exact offsets. Because every allocation here is a multiple of `sizeof(float)` and the base is `malloc`-aligned, every `matrix.es` is 4-byte aligned — fine for scalar float access, but **not** the 32-byte (AVX2) or 16-byte (NEON) alignment that vectorised loads want. Aligning arena allocations is a prerequisite for the SIMD roadmap, and is called out there.
+Two constraints the design deliberately accepts, worth knowing if you build on it. Capacity is committed up front — you size the arena once (the demo uses a generous 100 MB placeholder; a deployment would size it to the model) — and there's no individual free, only whole-arena reset or release. Both are the intended trade for a fixed-topology network, not oversights (see [Design Decisions](#design-decisions-and-tradeoffs)). One forward-looking note: `custom_alloc` returns byte-exact offsets, so every `matrix.es` lands on a 4-byte (`float`) boundary — perfect for scalar access, and the place to add 32-byte / 16-byte alignment when the SIMD backend arrives.
 
 ---
 
@@ -177,18 +151,14 @@ typedef struct {
 #define MAT_POS(m, r, c) ((m).es[(r) * (m).stride + (c)])
 ```
 
-The `stride` field is the important one. It decouples a matrix's logical shape (`rows × cols`) from its physical row spacing in memory. That single indirection buys **zero-copy views**:
+The `stride` field is the clever one. It decouples a matrix's logical shape (`rows × cols`) from its physical row spacing in memory, and that one indirection buys **zero-copy views**:
 
-- `row_matricize(m, i)` returns a `1 × cols` matrix whose `es` points *into* `m` at row `i` and whose `stride` is inherited from `m`. No data is copied — it's a window onto an existing row, the same idea as a slice.
-- The XOR demo exploits stride to treat one flat, interleaved array as two matrices at once: with `stride = 3`, the inputs are the `2`-wide view starting at column 0 and the outputs are the `1`-wide view starting at column 2 (`es = &data[2]`). One buffer, two logical matrices, no unpacking.
+- `row_matricize(m, i)` returns a `1 × cols` matrix whose `es` points *into* `m` at row `i`, inheriting `m`'s stride. No data is copied — it's a window onto an existing row.
+- The XOR demo uses stride to treat one flat, interleaved array as two matrices at once: with `stride = 3`, the inputs are the `2`-wide view at column 0 and the outputs are the `1`-wide view at column 2 (`es = &data[2]`). One buffer, two logical matrices, no unpacking.
 
-The core operations:
+The core operations: `matrix_dotproduct(dst, a, b)` checks the shapes, zeroes `dst`, and runs the classic triple loop (`dst[i][j] += a[i][k] * b[k][j]`); `matrix_sum_bias` broadcasts a `1 × cols` bias across every row; `matrix_activate` applies the sigmoid elementwise.
 
-- `matrix_dotproduct(dst, a, b)` — asserts `a.cols == b.rows` and that `dst` has the right shape, zeroes `dst` (because it accumulates with `+=`), then the classic triple loop: for each `dst[i][j]`, sum `a[i][k] * b[k][j]` over `k`.
-- `matrix_sum_bias(dst, bias)` — broadcasts a `1 × cols` bias across every row of `dst`.
-- `matrix_activate(m)` — applies the sigmoid elementwise.
-
-One performance note stated honestly: the `k` loop of `matrix_dotproduct` walks `b` **down its rows** — i.e., across memory in `stride`-sized jumps rather than contiguously. That is cache-hostile, and it is exactly the access pattern the cache-blocking milestone on the roadmap exists to fix. It is left naive on purpose: correctness first, then a benchmark, then the optimisation measured against it.
+The matmul is intentionally the textbook version, because it's the honest baseline the optimised path will be measured against. Its `k` loop walks `b` down its rows — across memory in stride-sized jumps — which is the cache behaviour the cache-blocking milestone on the roadmap targets. Correctness first, then a benchmark, then the optimisation proven against it.
 
 ---
 
@@ -206,13 +176,9 @@ typedef struct {
 #define NN_OUTPUT(nn) (nn)->inputs[(nn)->count]
 ```
 
-A network is described by an architecture array such as `{2, 2, 1}` (two inputs, one hidden layer of two units, one output). `nn_allocate` turns that into:
+A network is described by an architecture array such as `{2, 2, 1}` (two inputs, a hidden layer of two units, one output). `nn_allocate` turns that into `weights[i]` shaped `(layer i) × (layer i+1)`, `biases[i]` shaped `1 × (layer i+1)`, and `inputs[i]` — the activation buffer for each layer, with `inputs[0]` the network input and `inputs[count]` the output.
 
-- `weights[i]` shaped `(layer i width) × (layer i+1 width)`,
-- `biases[i]` shaped `1 × (layer i+1 width)`,
-- `inputs[i]` shaped `1 × (layer i width)` — the **activation buffer for each layer**, with `inputs[0]` the network input and `inputs[count]` the output.
-
-The forward pass is then a short loop:
+The forward pass is then a short, clean loop:
 
 ```c
 for (size_t i = 0; i < nn->count; i++) {
@@ -222,63 +188,55 @@ for (size_t i = 0; i < nn->count; i++) {
 }
 ```
 
-Storing every layer's activation in `inputs[]` is deliberate on two counts. First, the forward pass needs layer *i*'s output as layer *i+1*'s input, so those buffers must persist across the loop anyway. Second — and this is forward planning — **backpropagation needs the stored activations** to compute local gradients. The buffers the forward pass already keeps are precisely what the backward pass will consume, which is why the layout is built this way now rather than being retrofitted later.
+Storing every layer's activation in `inputs[]` pays off twice. The forward pass needs layer *i*'s output as layer *i+1*'s input, so those buffers must persist anyway — and backpropagation, which reads every activation to compute local gradients, will find them already laid out. The representation is built now for the pass that's coming next.
 
 ---
 
-## Training — Finite-Difference Gradient Descent
+## Training
 
-Kestrel currently learns without knowing any calculus. It treats the network as a black box and measures the gradient by nudging.
+Kestrel currently learns without knowing any calculus: it treats the network as a black box and measures the gradient by nudging it.
 
-**Cost** (`nn_cost`) is mean squared error over the dataset, accumulated in `double` for numerical headroom: for each training row, copy it into `NN_INPUT`, run the forward pass, and sum the squared differences between `NN_OUTPUT` and the target; divide by the number of rows.
+**Cost** (`nn_cost`) is mean squared error over the dataset, accumulated in `double`: for each row, copy it into `NN_INPUT`, run the forward pass, sum the squared differences at `NN_OUTPUT`, divide by the row count.
 
-**Gradient** (`nn_fdiff`) is a one-sided finite difference. With the baseline cost `c = nn_cost(...)` computed once, then for every weight and bias parameter `θ`:
+**Gradient** (`nn_fdiff`) is a finite difference. With the baseline cost `c` computed once, then for every parameter `θ`: bump it by `ε`, re-evaluate the cost, record `grad(θ) = (cost(θ + ε) − c) / ε`, and restore. **Update** (`nn_learn`) is plain descent: `θ -= rate * grad(θ)`. `gradient_descent` wraps these and keeps the best model seen — whenever a step beats the previous best cost, it snapshots the weights with `NN_copy`, cheap insurance against a noisy estimate wandering.
 
-```
-grad(θ) = ( cost(θ + ε) − c ) / ε
-```
+Choosing finite differences here is deliberate, not a placeholder. It exercises the *entire* training loop — cost, gradient, update, convergence — with a gradient that's impossible to get subtly wrong, which makes it the ideal way to prove the plumbing and the optimiser are correct before analytic gradients are introduced. And it earns a permanent place afterward: gradient checking against finite differences is how every autodiff implementation is verified, so it becomes the oracle the upcoming `nn_backprop` is validated against.
 
-The parameter is bumped by `ε`, a full cost evaluation is run, the gradient is recorded, and the parameter is restored. **Update** (`nn_learn`) is plain gradient descent: `θ -= rate * grad(θ)`.
-
-`gradient_descent` wraps these into the loop, and additionally keeps the best model seen: whenever a step lowers the cost below the previous best, it snapshots the weights with `NN_copy`. Finite-difference descent can wander — the estimate is noisy and the step is fixed — so retaining the best-seen parameters rather than only the last ones is cheap insurance.
-
-**The honest cost of this method.** One gradient step evaluates the cost once for the baseline plus once per parameter, and each evaluation is a full forward pass over the entire dataset. So a step is `O(P · N · F)` for `P` parameters, `N` training rows, and forward-pass cost `F`. For XOR that is `P = 9`, `N = 4` — nothing. For anything MNIST-shaped, `P` runs into the tens of thousands and this becomes hopeless: thousands of forward passes to take one step. On top of that, one-sided differencing carries truncation error on the order of `ε`, so `ε = 0.1` yields a deliberately crude gradient — it works here only because XOR's loss surface is forgiving. **This is the reason backpropagation is the next milestone.** Finite differences is kept afterward not as the trainer but as the *gradient-checking oracle*: the slow, obviously-correct reference that the fast analytic gradient is validated against.
+Its ceiling is complexity, and the README is exact about it: a step evaluates the cost once per parameter, each evaluation a full forward pass over the dataset, so a step costs `O(P · N · F)` for `P` parameters, `N` rows, forward cost `F`. For XOR (`P = 9`, `N = 4`) that's nothing; at MNIST parameter counts it stops being viable. That bound is precisely why analytic backpropagation is the next milestone — and why finite differences stays behind it as the reference, not the workhorse.
 
 ---
 
 ## Design Decisions and Tradeoffs
 
-**Why an arena instead of `malloc`/`free` per matrix.** A network is a set of allocations with identical lifetimes — they're all born at startup and all die together. Per-object allocation would pay for individual `free` calls, allocator metadata, and fragmentation to support a flexibility this workload never uses. The arena collapses all of it into one allocation and one free, gives `O(1)` sub-allocation with no bookkeeping, and makes total memory use fixed and predictable. The price is exactly the flexibility that was never needed: you cannot free one object, and capacity is committed up front. For a fixed-topology network that is the right trade, and it is the same reason arenas show up in compilers and game engines.
+**An arena instead of `malloc`/`free` per matrix.** A network is a set of allocations with one shared lifetime — born together at startup, freed together. Per-object allocation would pay for individual frees, allocator metadata, and fragmentation to buy a flexibility this workload never uses. The arena collapses all of it into one allocation and one free, gives `O(1)` sub-allocation with zero bookkeeping, and makes memory fixed and predictable. The price — no single-object free, capacity committed up front — is exactly the flexibility that wasn't needed. It's the same reason arenas run compilers and game engines.
 
-**Why finite differences before backprop.** It is the simplest thing that exercises the *entire* training loop — cost, gradient, update, convergence — with a gradient that is impossible to get subtly wrong. That makes it the ideal first rung: it proves the loop, the data plumbing, and the optimiser are correct before backprop's complexity (stored activations, the chain rule, transpose bookkeeping, gradient accumulation) is introduced. And it doesn't get thrown away — gradient checking against finite differences is the standard way every autodiff implementation is verified, so it becomes Kestrel's oracle. The cost is that it does not scale, which is precisely why it's a starting point and not the destination.
+**Finite differences before backprop.** The simplest thing that exercises the whole training loop with an un-get-wrong gradient, so it validates the loop before backprop's real complexity (stored activations, the chain rule, transpose bookkeeping, gradient accumulation) lands on top of it — and it survives as the gradient-checking oracle. It doesn't scale, which is exactly why it's the first rung and backprop is the next.
 
-**Why a single header.** Drop `kestrel.h` into a project and it builds — no library to compile, link, or version, no build system to configure. The stb-style `KESTREL_CODE` guard keeps declarations everywhere while the implementation lands in exactly one translation unit. The trade is compile-time cost in that one unit and the discipline of defining the macro in exactly one place; for a zero-dependency engine meant to be easy to vendor, that's worth it.
+**A single header.** Drop `kestrel.h` in and it builds — no library to compile, link, or version. The stb-style `KESTREL_CODE` guard keeps declarations everywhere while the implementation lands in one translation unit. The trade is compile-time cost in that unit and the discipline of one definition site; for a zero-dependency engine meant to be vendored, that's the right call.
 
-**Why store activations in `inputs[]`.** The forward pass needs each layer's output as the next layer's input, so those buffers must live across the whole pass regardless. Keeping them in a first-class array (rather than a scratch buffer that's overwritten) costs a little memory and pays it back twice: the forward loop stays a clean three-liner, and backprop — which must read every activation — finds them already laid out.
+**Activations as first-class buffers in `inputs[]`.** They must live across the forward pass regardless, and keeping them addressable (rather than overwriting scratch) keeps the forward loop a three-liner and hands backprop the activations it needs already laid out.
 
-**Why sigmoid and MSE, for now.** They are the simplest activation/cost pair that makes a non-linear function like XOR learnable, and both have clean derivatives (`σ' = a(1−a)`; MSE's is just the residual) for the backprop step to come. They are also the wrong pair for classification at scale — that wants ReLU hidden units and a softmax + cross-entropy head, whose combined gradient is far cleaner for many-class problems. That swap is on the roadmap, tied to MNIST.
+**Sigmoid and MSE.** The simplest activation/cost pair that makes a non-linear function like XOR learnable, and both have clean derivatives (`σ' = a(1−a)`; MSE's is the residual) for the backprop step to come. Classification at scale wants ReLU plus a softmax + cross-entropy head, whose combined gradient is far cleaner — that swap is on the roadmap with MNIST.
 
-**Why `float`, not `double`.** Single precision halves memory and bandwidth and is the precision edge and embedded targets actually run, which is the direction Kestrel aims. The cost accumulator is `double` to avoid compounding rounding across the dataset, but the parameters and activations are `float`. One caveat this creates for the *current* trainer: finite differencing subtracts two nearby costs and divides by a small `ε`, which is precision-sensitive — another reason the analytic gradient is the better long-term path.
+**`float`, not `double`.** Single precision halves memory and bandwidth and matches the precision edge and embedded targets run — the direction Kestrel aims. The cost accumulator stays `double` to avoid compounding rounding across the dataset.
 
 ---
 
 ## Roadmap
 
-Ordered, and the order is deliberate: **correctness before optimisation.** A fast wrong gradient is worthless, so nothing in the second half begins until the first half is done and verified.
+Ordered deliberately: **correctness before optimisation.** A fast wrong gradient is worthless, so nothing in the second half starts until the first half is done and verified.
 
-1. **`nn_backprop`** — analytic gradients via the chain rule, matching the three scalar rules to their matrix forms (activation → elementwise `a(1−a)`; bias → gradient passes straight through; matmul → the "other operand" rule, which appears as a transpose). Validated against `nn_fdiff` by gradient checking before it replaces it.
-2. **ReLU, softmax, cross-entropy, and MNIST** — real activations and a proper classification head, trained and evaluated on a real dataset.
-3. **SIMD compute path** — a vectorised matmul with an **AVX2** backend (x86) and a **NEON** backend (ARM), each benchmarked against the scalar baseline. Requires aligning arena allocations first (see the memory-model caveat).
-4. **Cache-blocked / tiled matmul** — fixing the cache-hostile access pattern in the current naive product, benchmarked against both the scalar and SIMD versions.
+1. **`nn_backprop`** — analytic gradients via the chain rule, mapping the scalar rules to their matrix forms (activation → elementwise `a(1−a)`; bias → gradient passes through; matmul → the "other operand" rule, which shows up as a transpose). Validated against `nn_fdiff` by gradient checking.
+2. **ReLU, softmax, cross-entropy, MNIST** — real activations and a proper classification head, trained and evaluated on a real dataset.
+3. **SIMD compute path** — a vectorised matmul with an **AVX2** backend (x86) and a **NEON** backend (ARM), each benchmarked against the scalar baseline. Aligns the arena first.
+4. **Cache-blocked / tiled matmul** — fixing the naive product's access pattern, benchmarked against both the scalar and SIMD versions.
 5. **Beyond** — int8 quantization, compile-time graph resolution, and a GPU backend.
 
-The destination is an **edge-inference engine**: the arena's zero-allocation hot path already gives deterministic, fragmentation-free memory suitable for constrained targets, and the single-header, standard-C, zero-dependency form is meant to compile anywhere from a server to a microcontroller. To be exact about the gap: a *selectable* CPU/SIMD/GPU backend and an actual microcontroller port are **roadmap items, not current capabilities** — today's engine is the finite-difference trainer this document describes. The design is pointed at that destination; it has not arrived there yet.
+The destination is an **edge-inference engine**: the arena's zero-allocation hot path already gives the deterministic, fragmentation-free memory those targets need, and the single-header, zero-dependency form is built to compile anywhere from a server to a microcontroller. The design is pointed squarely there; the roadmap above is the distance still to cover.
 
 ---
 
 ## File Structure
-
-Proposed layout for the standalone repository:
 
 ```
 kestrel/
@@ -286,8 +244,8 @@ kestrel/
 ├── LICENSE            — MIT
 ├── kestrel.h          — the single-header engine: API, plus implementation under KESTREL_CODE
 ├── examples/
-│   └── xor.c          — the {2,2,1} XOR demo (define KESTREL_CODE, include, train)
-└── build.sh           — gcc -O2 -Wall -Wextra examples/xor.c -o kestrel -lm
+│   └── xor.c          — the {2,2,1} XOR demo
+└── build.sh           — gcc -O2 -Wall -Wextra -I. examples/xor.c -o kestrel -lm
 ```
 
-`kestrel.h` is the project; everything else is a driver, a document, or a licence. Naming the demo `examples/xor.c` rather than leaving it as `kestrel.c` makes the separation explicit — the library is the header, the `.c` file is one program that uses it.
+`kestrel.h` is the project; everything else is a driver, a document, or a licence.
