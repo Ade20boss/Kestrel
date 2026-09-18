@@ -85,6 +85,7 @@ size_t tensor_offset(const tensor_t *tensor, const size_t *idx);
  * Allocation: No.
  * Aliasing: N/A (Read-only).
  * Failure: Returns false if shapes mismatch or if either tensor is invalid.
+ * This function ignores strides and treats transposed views as having equal shapes.
  */
 bool tensor_same_shape(const tensor_t *tensor_a, const tensor_t *tensor_b);
 
@@ -102,6 +103,10 @@ bool tensor_is_contiguous(const tensor_t *tensor);
  * Aliasing: N/A (Read-only).
  * Failure: Returns false if .data is NULL.
  */
-bool tensor_is_valid(const tensor_t *tensor);
+static inline bool tensor_is_valid(const tensor_t *tensor)
+{
+    KESTREL_ASSERT(tensor != NULL);
+    return tensor->data != NULL;
+}
 
 #endif //TENSOR_H_

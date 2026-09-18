@@ -94,7 +94,7 @@ tensor_t tensor_zeros(arena_t *arena, size_t ndim, const size_t *shape)
     tensor_t allocated = tensor_alloc(arena, ndim, shape);
 
     /*Check if allocation failed (checking if the returned struct is "zero")*/
-    if (allocated.data == NULL || allocated.ndim == 0)
+    if (!tensor_is_valid(&allocated))
     {
         /*
          * tensor_alloc already printed the specific error message,
@@ -111,4 +111,93 @@ tensor_t tensor_zeros(arena_t *arena, size_t ndim, const size_t *shape)
     memset(allocated.data, 0, allocated.count * sizeof(float));
 
     return allocated;
+}
+
+bool tensor_same_shape(const tensor_t *tensor_a, const tensor_t *tensor_b)
+{
+    KESTREL_ASSERT(tensor_a != NULL);
+    KESTREL_ASSERT(tensor_b != NULL);
+
+    if (!tensor_is_valid(tensor_a) || !tensor_is_valid(tensor_b))
+    {
+        return false;
+    }
+
+    if (tensor_a->ndim != tensor_b->ndim)
+    {
+        return false;
+    }
+
+    for (size_t i = 0; i < tensor_a->ndim; i++)
+    {
+        if (tensor_a->shape[i] != tensor_b->shape[i])
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool tensor_is_contiguous(const tensor_t *tensor)
+{
+    KESTREL_ASSERT(tensor != NULL);
+
+    if (!tensor_is_valid(tensor))
+    {
+        return false;
+    }
+    size_t expected_stride = 1;
+    for (size_t i = tensor->ndim; i-- > 0;)
+    {
+        if (tensor->strides[i] != expected_stride)
+        {
+            return false;
+        }
+
+        expected_stride *= tensor->shape[i];
+    }
+
+    return true;
+}
+
+tensor_t tensor_transpose(const tensor_t *tensor)
+{
+    KESTREL_ASSERT(tensor != NULL);
+    tensor_t invalid = {0};
+
+    if (!tensor_is_valid(tensor) || tensor->ndim < 2)
+    {
+        return invalid;
+    }
+
+    tensor_t view = *tensor;
+    //transpose magic, swap last two dimensions(since last two dimensions is always the rows and columns) and swap the last two strides(since they represent the row and column strides)
+    //
+    size_t temp1 = view.shape[view.ndim - 1];
+    view.shape[view.ndim - 1] = view.shape[view.ndim - 2];
+    view.shape[view.ndim - 2] = temp1;
+
+    size_t temp2 = view.strides[view.ndim - 1];
+    view.strides[view.ndim - 1] = view.strides[view.ndim - 2];
+    view.strides[view.ndim - 2] = temp2;
+
+    return view;
+}
+
+
+size_t tensor_offset(const tensor_t *tensor, const size_t *idx)
+{
+    KESTREL_ASSERT(tensor != NULL);
+    KESTREL_ASSERT(idx != NULL);
+
+    size_t offset = 0;
+
+    for (size_t i = 0; i < tensor->ndim; i++)
+    {
+        KESTREL_ASSERT(idx[i] < tensor->shape[i]);
+        offset += (idx[i] * tensor->strides[i]);
+    }
+
+    return offset;
 }

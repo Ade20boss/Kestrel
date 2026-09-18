@@ -179,6 +179,93 @@ int main(void)
 
     TENSOR_CHECK(test5.device == DEV_CPU, ".device is DEV_CPU by default");
 
+    /*tensor_is_valid tests*/
+    size_t shape6[] = {2, 2};
+    tensor_t test6 = tensor_zeros(&a, 2, shape6);
+
+    TENSOR_CHECK(tensor_is_valid(&test6) == true, "tensor_is_valid is true for valid tensors");
+
+    size_t shape7[] = {5, 5};
+    tensor_t test7 = tensor_zeros(&a, 0, shape7);
+    TENSOR_CHECK(tensor_is_valid(&test7) == false, "tensor_is_valid is false for invalid tensors");
+
+    /*tensor_is_contiguous tests */
+    TENSOR_CHECK(tensor_is_contiguous(&test4) == true, "1D tensor is contiguous");
+    TENSOR_CHECK(tensor_is_contiguous(&test2) == true, "2D tensor is contiguous");
+    TENSOR_CHECK(tensor_is_contiguous(&test1) == true, "3D tensor is contiguous");
+    TENSOR_CHECK(tensor_is_contiguous(&test3) == true, "4D tensor is contiguous");
+    TENSOR_CHECK(tensor_is_contiguous(&test7) == false, "Invalid tensor is not contiguous");
+
+
+    /*tensor_transpose test*/
+    tensor_t view2d = tensor_transpose(&test2);
+    TENSOR_CHECK(view2d.shape[0] == 3u && view2d.shape[1] == 2u, "tensor_transpose produces a swapped shape");
+
+    TENSOR_CHECK(view2d.strides[0] == 1u && view2d.strides[1] == 3u, "tensor_transpose produces swapped strides");
+
+    TENSOR_CHECK(view2d.ndim == test2.ndim, "tensor_transpose does not alter .ndims");
+    TENSOR_CHECK(view2d.count == test2.count, "tensor_transpose does not alter .count");
+    TENSOR_CHECK(view2d.data == test2.data, "tensor_transpose performs no allocation");
+
+    /*implicit tensor_is_contiguous on transposed view */
+    TENSOR_CHECK(tensor_is_contiguous(&view2d) == false, "tensor_is_contiguous returns false on transposed view");
+
+    /*double view test */
+    tensor_t double_view = tensor_transpose(&view2d);
+    TENSOR_CHECK(double_view.shape[0] == 2u && double_view.shape[1] == 3u, "tensor_transpose produces a swapped shape");
+    TENSOR_CHECK(double_view.strides[0] == 3u && double_view.strides[1] == 1u,
+                 "tensor_transpose produces swapped strides");
+
+
+    /*3D view */
+    tensor_t view3d = tensor_transpose(&test1);
+    TENSOR_CHECK(view3d.shape[0] == 32u && view3d.shape[1] == 28u && view3d.shape[2] == 28u,
+                 "tensor_transpose produces a swapped shape");
+
+    TENSOR_CHECK(view3d.strides[0] == 784u && view3d.strides[1] == 1u && view3d.strides[2] == 28u,
+                 "tensor_transpose produces swapped strides");
+
+    /*alias proof */
+    view2d.data[0] = 42.0f;
+    TENSOR_CHECK(test2.data[0] == 42.0f, "Writing through transposed view alters the original");
+
+    /*1D rejection */
+    tensor_t view1d = tensor_transpose(&test4);
+    TENSOR_CHECK(tensor_is_valid(&view1d) == false, "tensor_is_valid returns false on invalid tensors");
+
+
+    /*tensor_same_shape tests*/
+    size_t shape8[] = {2, 3};
+    tensor_t test8 = tensor_zeros(&a, 2, shape8);
+
+    size_t shape9[] = {2, 3};
+    tensor_t test9 = tensor_zeros(&a, 2, shape9);
+
+    size_t shape10[] = {3, 2};
+    tensor_t test10 = tensor_zeros(&a, 2, shape10);
+
+    size_t shape11[] = {2, 3, 1};
+    tensor_t test11 = tensor_zeros(&a, 3, shape11);
+
+    /*same shape test */
+    TENSOR_CHECK(tensor_same_shape(&test8, &test9) == true, "tensor_same_shape is true for tensors with same shape");
+
+    /*different shape test */
+    TENSOR_CHECK(tensor_same_shape(&test8, &test10) == false,
+                 "tensor_same_shape is false for tensors with different shapes");
+
+    /*different rank test */
+    TENSOR_CHECK(tensor_same_shape(&test8, &test11) == false,
+                 "tensor_same_shape is false for tensors with different dimensions");
+
+
+    /*tensor offset tests */
+    size_t idx2[] = {1, 2};
+    TENSOR_CHECK(tensor_offset(&test2, idx2) == 5, "2D offset math is correct");
+
+    size_t idx3[] = {2, 14, 7};
+    TENSOR_CHECK(tensor_offset(&test1, idx3) == 1967, "3D offset math is correct");
+
 
     arena_destroy(&a);
 
