@@ -26,7 +26,7 @@ bool arena_init(arena_t *arena, size_t requested_capacity)
         return false;
     }
 
-
+    /*If the arena is in zero state then initialization is allowed to happen*/
     if (arena->data == NULL && arena->capacity == 0 && arena->offset == 0)
     {
 
@@ -63,6 +63,7 @@ bool arena_init(arena_t *arena, size_t requested_capacity)
         return true;
     }
 
+    /*An arena in invalid state cannot be initialized */
     else
     {
         KESTREL_ASSERT(arena->data == NULL);

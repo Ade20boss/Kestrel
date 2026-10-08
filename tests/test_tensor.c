@@ -2,7 +2,6 @@
 #include "tensor.h"
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 
 static int fails = 0, total = 0;

@@ -20,7 +20,37 @@ typedef enum
 {
     DEV_CPU = 0,
     DEV_CUDA = 1 /* Reserved for your future CUDA backend */
-} device_t;
+} device_t;      //pending removal in KES-004
+
+/*Supported dtype set */
+typedef enum
+{
+    KESTREL_DTYPE_INVALID = 0,
+    KESTREL_DTYPE_FP16,
+    KESTREL_DTYPE_BF16,
+    KESTREL_DTYPE_FP32,
+    KESTREL_DTYPE_FP64,
+    KESTREL_DTYPE_INT8,
+    KESTREL_DTYPE_UINT8,
+    KESTREL_DTYPE_INT16,
+    KESTREL_DTYPE_UINT16,
+    KESTREL_DTYPE_INT32,
+    KESTREL_DTYPE_UINT32,
+    KESTREL_DTYPE_INT64,
+    KESTREL_DTYPE_UINT64,
+    KESTREL_DTYPE_BOOL,
+    KESTREL_DTYPE_COUNT
+} kestrel_dtype_t;
+
+typedef int kestrel_status_t;
+
+enum
+{
+    KESTREL_STATUS_SUCCESS = 0,
+    KESTREL_STATUS_INVALID_ARGUMENT,
+    KESTREL_STATUS_INVALID_STATE,
+    KESTREL_STATUS_OUT_OF_MEMORY
+};
 
 /* --- Assertion Framework --- */
 /*

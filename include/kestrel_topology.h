@@ -153,8 +153,8 @@ typedef struct
     kestrel_identity_value_t identity;
 } kestrel_memory_identity_metadata_t;
 
-kestrel_status_t kestrel_topology_builder_create(kestrel_topology_builder_t **builder);
 
+kestrel_status_t kestrel_topology_builder_create(kestrel_topology_builder_t **builder);
 
 void kestrel_topology_builder_destroy(kestrel_topology_builder_t **builder);
 

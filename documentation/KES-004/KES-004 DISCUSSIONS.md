@@ -1,4 +1,3 @@
-Absolutely. Before implementation, you should be able to explain KES-004 in your own words without looking at the code.
 
 The whole purpose of KES-004 is to teach Kestrel **what machine it is running on**.
 
