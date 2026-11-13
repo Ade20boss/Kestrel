@@ -14,6 +14,10 @@ static int fails = 0, total = 0;
             fails++;                                                                                                   \
             printf("  FAIL: %s (line %d)\n", msg, __LINE__);                                                           \
         }                                                                                                              \
+        else                                                                                                           \
+        {                                                                                                              \
+            printf("  PASS: %s\n", msg);                                                                               \
+        }                                                                                                              \
     } while (0)
 
 
@@ -226,7 +230,36 @@ int main(void)
     CHECK(cuda_id.length == 16, "Identity stores length");
     CHECK(cuda_id.bytes[0] == 0xAB, "Identity stores raw byte evidence");
 
+
+    //Creating a builder once no one is active - Should pass
+    CHECK(kestrel_topology_builder_create(&builder) == KESTREL_STATUS_SUCCESS,
+          "builder create suceeds on a NULL builder pointer object");
+
+    //Creating a second builder without destroying the first should fail
+    kestrel_topology_builder_t *builder_two = NULL;
+    CHECK(kestrel_topology_builder_create(&builder_two) == KESTREL_STATUS_INVALID_STATE,
+          "builder create fails when one builder is already active");
+
+    CHECK(builder_two == NULL, "Failed builder creation leaves pointer NULL");
+
+    kestrel_topology_builder_destroy(&builder);
+    CHECK(builder == NULL, "After destruction, builder object is NULL");
+
+    CHECK(kestrel_topology_builder_create(&builder_two) == KESTREL_STATUS_SUCCESS,
+          "builder create suceeds when an active builder is destroyed");
+
+    CHECK(kestrel_topology_builder_create(&builder_two) == KESTREL_STATUS_INVALID_STATE,
+          "builder create fails on live builder");
+
+    kestrel_topology_builder_destroy(&builder_two);
+    CHECK(builder == NULL, "After destruction, builder object is NULL");
+
+
     // Final tally and exit
     printf("\nTotal: %d, Fails: %d\n", total, fails);
-    return fails == 0 ? 0 : 1;
+    if (fails == 0)
+    {
+        return 0;
+    }
+    return 1;
 }

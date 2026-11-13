@@ -14,6 +14,10 @@ static int fails = 0, total = 0;
             fails++;                                                                                                   \
             printf("  FAIL: %s (line %d)\n", msg, __LINE__);                                                           \
         }                                                                                                              \
+        else                                                                                                           \
+        {                                                                                                              \
+            printf("  PASS: %s\n", msg);                                                                               \
+        }                                                                                                              \
     } while (0)
 
 
@@ -269,5 +273,9 @@ int main(void)
     arena_destroy(&a);
 
     printf("\n%d/%d passed, %d failed\n", total - fails, total, fails);
-    return fails != 0;
+    if (fails == 0)
+    {
+        return 0;
+    }
+    return 1;
 }

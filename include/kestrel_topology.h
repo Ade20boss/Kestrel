@@ -8,7 +8,7 @@
 
 #define KESTREL_MAX_TOPOLOGY_NAME 128
 #define KESTREL_MAX_VENDOR_NAME 64
-#define KESTREL_MAX_IDENTITY_BYTES 64
+#define KESTREL_MAX_IDENTITY_BYTES 128
 
 typedef struct kestrel_topology_builder kestrel_topology_builder_t;
 typedef struct kestrel_runtime_topology kestrel_runtime_topology_t;
@@ -45,11 +45,21 @@ typedef enum
 
 typedef enum
 {
+    KESTREL_GPU_INTEGRATION_INVALID = 0,
+    KESTREL_GPU_INTEGRATION_UNKNOWN,
+    KESTREL_GPU_INTEGRATION_INTEGRATED,
+    KESTREL_GPU_INTEGRATION_NON_INTEGRATED,
+    KESTREL_GPU_INTEGRATION_NOT_APPLICABLE
+} kestrel_gpu_integration_t;
+
+typedef enum
+{
     KESTREL_BACKEND_FAMILY_INVALID = 0,
     KESTREL_BACKEND_FAMILY_SCALAR,
     KESTREL_BACKEND_FAMILY_AVX2,
     KESTREL_BACKEND_FAMILY_VULKAN,
-    KESTREL_BACKEND_FAMILY_CUDA
+    KESTREL_BACKEND_FAMILY_CUDA,
+    KESTREL_BACKEND_FAMILY_LEVEL_ZERO
 } kestrel_backend_family_t;
 
 typedef enum
@@ -63,13 +73,15 @@ typedef enum
 typedef enum
 {
     KESTREL_IDENTITY_KIND_INVALID = 0,
-    KESTREL_IDENTITY_KIND_PCI_BDF,
-    KESTREL_IDENTITY_KIND_LINUX_DRM_DEVICE,
     KESTREL_IDENTITY_KIND_NVIDIA_GPU_UUID,
     KESTREL_IDENTITY_KIND_CUDA_DEVICE_UUID,
     KESTREL_IDENTITY_KIND_VULKAN_DEVICE_UUID,
     KESTREL_IDENTITY_KIND_NVIDIA_MIG_UUID,
     KESTREL_IDENTITY_KIND_LEVEL_ZERO_DEVICE_UUID,
+
+    /* Memory resource identities */
+    KESTREL_IDENTITY_KIND_NVDIMM_NAMESPACE_UUID,
+    KESTREL_IDENTITY_KIND_CXL_PERSISTENT_REGION_UUID
 } kestrel_identity_kind_t;
 
 
@@ -79,6 +91,7 @@ typedef struct
     kestrel_compute_class_t compute_class;
     char name[KESTREL_MAX_TOPOLOGY_NAME];
     char vendor[KESTREL_MAX_VENDOR_NAME];
+    kestrel_gpu_integration_t gpu_integration;
 } kestrel_physical_device_t;
 
 
@@ -87,6 +100,7 @@ typedef struct
     kestrel_execution_target_id_t id;
     kestrel_compute_class_t compute_class;
     char name[KESTREL_MAX_TOPOLOGY_NAME];
+    kestrel_gpu_integration_t gpu_integration;
 } kestrel_execution_target_t;
 
 
